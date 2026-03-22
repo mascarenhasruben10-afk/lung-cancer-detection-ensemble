@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+
+data/
+dataset/
+models/
+results/
+
+prediction_graph.pngvenv/
+__pycache__/
+
+data/
+dataset/
+models/
+results/
+
+prediction_graph.png

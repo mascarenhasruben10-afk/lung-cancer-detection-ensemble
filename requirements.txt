@@ -1,0 +1,11 @@
+tensorflow==2.20.0
+keras
+numpy
+pandas
+scikit-learn
+matplotlib
+datasets
+Pillow
+opencv-python
+gradio
+seaborn
