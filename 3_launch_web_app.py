@@ -1,239 +1,130 @@
-import numpy as np
 import tensorflow as tf
-from PIL import Image
-import gradio as gr
 import matplotlib.pyplot as plt
 import os
+import json
 
-# =========================
+from tensorflow.keras.applications import Xception, InceptionResNetV2, MobileNetV2
+from tensorflow.keras.layers import GlobalAveragePooling2D, Dropout, Dense
+from tensorflow.keras.models import Model
+
+# ======================
 # CONFIG
-# =========================
+# ======================
 
-model_classes = ["Benign","Malignant","Normal"]
-ENSEMBLE_ACCURACY = "96.5%"
+IMG_SIZE = 256
+BATCH_SIZE = 32
+EPOCHS = 60
 
-# =========================
-# LOAD MODELS
-# =========================
+DATA_DIR = "data"
 
-model_paths = [
-    "models/xception.keras",
-    "models/inceptionresnet.keras",
-    "models/mobilenet.keras"
-]
+# ======================
+# DATASET LOADING
+# ======================
 
-print("Models Folder:", os.listdir("models"))
+train_ds = tf.keras.utils.image_dataset_from_directory(
+    f"{DATA_DIR}/train",
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE
+)
 
-models = [tf.keras.models.load_model(p) for p in model_paths]
+val_ds = tf.keras.utils.image_dataset_from_directory(
+    f"{DATA_DIR}/val",
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE
+)
 
-print("✅ Models loaded successfully")
+class_names = train_ds.class_names
+NUM_CLASSES = len(class_names)
 
-# =========================
-# PREPROCESS
-# =========================
+print("Classes:", class_names)
 
-def preprocess(image):
-    image = image.resize((256,256))
-    img = np.array(image)/255.0
+train_ds = train_ds.map(lambda x, y: (x/255.0, y))
+val_ds = val_ds.map(lambda x, y: (x/255.0, y))
 
-    if len(img.shape)==2:
-        img = np.stack((img,)*3,axis=-1)
+# ======================
+# MODEL BUILDER
+# ======================
 
-    img = np.expand_dims(img,axis=0)
-    return img
+def build_model(base_model, name):
 
-# =========================
-# PREDICTION
-# =========================
+    base = base_model(
+        weights="imagenet",
+        include_top=False,
+        input_shape=(IMG_SIZE, IMG_SIZE, 3)
+    )
 
-def predict(image):
+    base.trainable = False
 
-    img = preprocess(image)
+    x = GlobalAveragePooling2D()(base.output)
+    x = Dropout(0.3)(x)
 
-    preds = []
-    for model in models:
-        preds.append(model.predict(img,verbose=0)[0])
+    outputs = Dense(NUM_CLASSES, activation="softmax")(x)
 
-    avg_probs = np.mean(preds,axis=0)
+    model = Model(base.input, outputs, name=name)
 
-    pred_index = np.argmax(avg_probs)
-    pred_class = model_classes[pred_index]
-    confidence = avg_probs[pred_index]*100
+    model.compile(
+        optimizer="adam",
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"]
+    )
 
-    # =========================
-    # GRAPH
-    # =========================
+    return model
 
-    plt.figure(figsize=(7,4))
-    bars = plt.bar(model_classes,avg_probs*100)
+# ======================
+# CREATE MODELS
+# ======================
 
-    bars[pred_index].set_color("red")
+models = {
+"xception": build_model(Xception, "xception"),
+"inceptionresnet": build_model(InceptionResNetV2, "inceptionresnet"),
+"mobilenet": build_model(MobileNetV2, "mobilenet")
+}
 
-    plt.ylabel("Probability (%)")
-    plt.title("Cancer Type Probability")
+os.makedirs("models", exist_ok=True)
+os.makedirs("results", exist_ok=True)
 
-    plt.tight_layout()
-    graph_path = "prediction_graph.png"
-    plt.savefig(graph_path)
-    plt.close()
+histories = {}
 
-    # =========================
-    # OUTPUT
-    # =========================
+# ======================
+# TRAIN MODELS
+# ======================
 
-    result = f"""
-### Prediction: {pred_class}
+for name, model in models.items():
 
-**Confidence: {confidence:.2f}%**
+    print("\nTraining", name)
 
-### Individual Model Predictions:
-- Xception → {model_classes[np.argmax(preds[0])]}
-- InceptionResNet → {model_classes[np.argmax(preds[1])]}
-- MobileNet → {model_classes[np.argmax(preds[2])]}
-"""
+    history = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=EPOCHS
+    )
 
-    probs = {
-        model_classes[i]: round(float(avg_probs[i]),3)
-        for i in range(3)
-    }
+    model.save(f"models/{name}.keras")
 
-    return result, probs, graph_path
+    histories[name] = history.history
 
-# =========================
-# ABOUT TEXT
-# =========================
-
-about_text = """
-## 🫁 Lung Cancer Detection using Ensemble Deep Learning
-
-This system classifies lung CT scans into:
-
-- Benign
-- Malignant
-- Normal
-
-### 🧠 Models Used
-- Xception
-- InceptionResNetV2
-- MobileNetV2
-
-### ⚙️ How It Works
-Each model predicts probabilities independently.  
-Final prediction is obtained using **ensemble averaging**.
-
-### 🎯 Why Ensemble?
-- Reduces individual model errors
-- Improves accuracy
-- More reliable predictions
-
-### 🏆 Results
-- Ensemble Accuracy: **96.5%**
-- MobileNetV2: Best individual model
-- Ensemble: Most stable model
-"""
-
-# =========================
-# PERFORMANCE TEXT
-# =========================
-
-performance_text = f"""
-## 📊 Model Performance
-
-### Ensemble Accuracy
-**{ENSEMBLE_ACCURACY}**
-
-### Key Insights
-
-• MobileNetV2 achieved highest individual accuracy  
-• Ensemble model improves robustness  
-• AUC scores close to 1  
-
-### Why Ensemble Works?
-
-Combining multiple models reduces variance and improves generalization.
-"""
-
-# =========================
-# UI
-# =========================
-
-with gr.Blocks(title="Lung Cancer Detection System") as app:
-
-    gr.Markdown("# 🫁 Lung Cancer Detection System")
-
-    with gr.Tabs():
-
-        # ======================
-        # PREDICTION TAB
-        # ======================
-        with gr.Tab("Prediction"):
-
-            gr.Markdown(f"### Ensemble Model Accuracy: {ENSEMBLE_ACCURACY}")
-
-            image = gr.Image(type="pil", label="Upload Lung CT Scan")
-
-            output_text = gr.Markdown()
-            output_probs = gr.Label()
-            output_graph = gr.Image()
-
-            btn = gr.Button("Predict")
-
-            btn.click(
-                predict,
-                inputs=image,
-                outputs=[output_text, output_probs, output_graph]
-            )
-
-        # ======================
-        # MODEL PERFORMANCE TAB
-        # ======================
-        with gr.Tab("Model Performance"):
-
-            gr.Markdown(performance_text)
-
-            # MODEL COMPARISON
-            gr.Markdown("## 📊 Model Comparison")
-            gr.Image("results/model_comparison.png", label="Accuracy Comparison")
-            gr.Image("results/precision_comparison.png", label="Precision Comparison")
-            gr.Image("results/recall_comparison.png", label="Recall Comparison")
-
-            # CONFUSION MATRIX
-            gr.Markdown("## 🔍 Confusion Matrix")
-            gr.Image("results/confusion_matrix.png")
-
-            # ROC
-            gr.Markdown("## 📈 ROC Curves")
-            gr.Image("results/roc_curves.png")
-            gr.Image("results/roc_comparison.png")
-
-            # DISTRIBUTION
-            gr.Markdown("## 📊 Prediction Distribution")
-            gr.Image("results/prob_distribution.png")
-            gr.Image("results/confidence_hist.png")
-
-            # TRAINING GRAPHS
-            gr.Markdown("## 🧠 Training Performance")
-
-            gr.Markdown("### Xception")
-            gr.Image("results/xception_accuracy.png")
-            gr.Image("results/xception_loss.png")
-
-            gr.Markdown("### InceptionResNetV2")
-            gr.Image("results/inceptionresnet_accuracy.png")
-            gr.Image("results/inceptionresnet_loss.png")
-
-            gr.Markdown("### MobileNetV2")
-            gr.Image("results/mobilenet_accuracy.png")
-            gr.Image("results/mobilenet_loss.png")
-
-        # ======================
-        # ABOUT TAB
-        # ======================
-        with gr.Tab("About Project"):
-            gr.Markdown(about_text)
-
-# =========================
-# RUN
-# =========================
-
-app.launch()
+    # accuracy graph
+    plt.figure()
+    plt.plot(history.history["accuracy"])
+    plt.plot(history.history["val_accuracy"])
+    plt.title(f"{name} Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.legend(["train", "val"])
+    plt.savefig(f"results/{name}_accuracy.png")
+
+    # loss graph
+    plt.figure()
+    plt.plot(history.history["loss"])
+    plt.plot(history.history["val_loss"])
+    plt.title(f"{name} Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend(["train", "val"])
+    plt.savefig(f"results/{name}_loss.png")
+
+# save history
+with open("results/training_history.json", "w") as f:
+    json.dump(histories, f)
+
+print("Training complete")
