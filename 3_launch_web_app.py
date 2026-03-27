@@ -6,10 +6,11 @@ import matplotlib.pyplot as plt
 import os
 
 # =========================
-# CLASS ORDER
+# CONFIG
 # =========================
 
 model_classes = ["Benign","Malignant","Normal"]
+ENSEMBLE_ACCURACY = "96.5%"
 
 # =========================
 # LOAD MODELS
@@ -21,29 +22,24 @@ model_paths = [
     "models/mobilenet.keras"
 ]
 
-models = []
+print("Models Folder:", os.listdir("models"))
 
-for p in model_paths:
-    model = tf.keras.models.load_model(p)
-    models.append(model)
+models = [tf.keras.models.load_model(p) for p in model_paths]
 
-print("Models loaded successfully")
+print("✅ Models loaded successfully")
 
 # =========================
-# IMAGE PREPROCESSING
+# PREPROCESS
 # =========================
 
 def preprocess(image):
-
     image = image.resize((256,256))
-
     img = np.array(image)/255.0
 
     if len(img.shape)==2:
         img = np.stack((img,)*3,axis=-1)
 
     img = np.expand_dims(img,axis=0)
-
     return img
 
 # =========================
@@ -54,118 +50,111 @@ def predict(image):
 
     img = preprocess(image)
 
-    probs_list = []
-
+    preds = []
     for model in models:
+        preds.append(model.predict(img,verbose=0)[0])
 
-        p = model.predict(img,verbose=0)[0]
-
-        probs_list.append(p)
-
-    avg_probs = np.mean(probs_list,axis=0)
+    avg_probs = np.mean(preds,axis=0)
 
     pred_index = np.argmax(avg_probs)
-
     pred_class = model_classes[pred_index]
-
     confidence = avg_probs[pred_index]*100
 
-    # probability graph
-    plt.figure(figsize=(7,4))
+    # =========================
+    # GRAPH
+    # =========================
 
+    plt.figure(figsize=(7,4))
     bars = plt.bar(model_classes,avg_probs*100)
 
     bars[pred_index].set_color("red")
 
     plt.ylabel("Probability (%)")
-
     plt.title("Cancer Type Probability")
 
     plt.tight_layout()
-
-    graph="prediction_graph.png"
-
-    plt.savefig(graph)
-
+    graph_path = "prediction_graph.png"
+    plt.savefig(graph_path)
     plt.close()
 
-    result=f"""
-Prediction: **{pred_class}**
+    # =========================
+    # OUTPUT
+    # =========================
 
-Confidence: **{confidence:.2f}%**
+    result = f"""
+### Prediction: {pred_class}
+
+**Confidence: {confidence:.2f}%**
+
+### Individual Model Predictions:
+- Xception → {model_classes[np.argmax(preds[0])]}
+- InceptionResNet → {model_classes[np.argmax(preds[1])]}
+- MobileNet → {model_classes[np.argmax(preds[2])]}
 """
 
-    probs={model_classes[i]:float(avg_probs[i]*100) for i in range(3)}
+    probs = {
+        model_classes[i]: round(float(avg_probs[i]),3)
+        for i in range(3)
+    }
 
-    return result,probs,graph
+    return result, probs, graph_path
 
 # =========================
 # ABOUT TEXT
 # =========================
 
 about_text = """
-## Lung Cancer Detection using Deep Learning Ensemble
+## 🫁 Lung Cancer Detection using Ensemble Deep Learning
 
-This project presents an AI-powered system for automated lung cancer detection from CT scan images.
+This system classifies lung CT scans into:
 
-### Objective
-The goal of this system is to assist medical professionals in early detection of lung cancer.
+- Benign
+- Malignant
+- Normal
 
-### Dataset
-The system uses the **IQ-OTH/NCCD Lung Cancer Dataset** containing CT scan images categorized into:
+### 🧠 Models Used
+- Xception
+- InceptionResNetV2
+- MobileNetV2
 
-• Benign  
-• Malignant  
-• Normal  
+### ⚙️ How It Works
+Each model predicts probabilities independently.  
+Final prediction is obtained using **ensemble averaging**.
 
-### Deep Learning Models Used
-The system uses three CNN architectures:
+### 🎯 Why Ensemble?
+- Reduces individual model errors
+- Improves accuracy
+- More reliable predictions
 
-• Xception  
-• InceptionResNetV2  
-• MobileNetV2  
-
-### Ensemble Learning
-Predictions from all three models are combined using ensemble averaging to improve accuracy.
-
-### Technology Stack
-
-• Python  
-• TensorFlow / Keras  
-• NumPy / Scikit-learn  
-• Matplotlib  
-• Gradio
-
-### Application
-This system can assist radiologists in automated lung cancer screening using CT images.
+### 🏆 Results
+- Ensemble Accuracy: **96.5%**
+- MobileNetV2: Best individual model
+- Ensemble: Most stable model
 """
 
 # =========================
 # PERFORMANCE TEXT
 # =========================
 
-performance_text = """
-## Model Performance Evaluation
+performance_text = f"""
+## 📊 Model Performance
 
-The performance of the models was evaluated using several metrics.
+### Ensemble Accuracy
+**{ENSEMBLE_ACCURACY}**
 
-### Confusion Matrix
-Shows classification accuracy across Benign, Malignant and Normal classes.
+### Key Insights
 
-### ROC Curve
-Shows model ability to distinguish between classes with AUC scores close to 1.
-
-### Model Comparison
-Accuracy, precision and recall comparison between Xception, InceptionResNetV2, MobileNetV2 and the ensemble.
-
-### Observations
 • MobileNetV2 achieved highest individual accuracy  
 • Ensemble model improves robustness  
-• All models achieve AUC greater than 0.99
+• AUC scores close to 1  
+
+### Why Ensemble Works?
+
+Combining multiple models reduces variance and improves generalization.
 """
 
 # =========================
-# GRADIO APP
+# UI
 # =========================
 
 with gr.Blocks(title="Lung Cancer Detection System") as app:
@@ -175,17 +164,16 @@ with gr.Blocks(title="Lung Cancer Detection System") as app:
     with gr.Tabs():
 
         # ======================
-        # Prediction Tab
+        # PREDICTION TAB
         # ======================
-
         with gr.Tab("Prediction"):
 
-            image = gr.Image(type="pil",label="Upload Lung CT Scan")
+            gr.Markdown(f"### Ensemble Model Accuracy: {ENSEMBLE_ACCURACY}")
+
+            image = gr.Image(type="pil", label="Upload Lung CT Scan")
 
             output_text = gr.Markdown()
-
             output_probs = gr.Label()
-
             output_graph = gr.Image()
 
             btn = gr.Button("Predict")
@@ -193,45 +181,59 @@ with gr.Blocks(title="Lung Cancer Detection System") as app:
             btn.click(
                 predict,
                 inputs=image,
-                outputs=[output_text,output_probs,output_graph]
+                outputs=[output_text, output_probs, output_graph]
             )
 
         # ======================
-        # Model Performance
+        # MODEL PERFORMANCE TAB
         # ======================
-
         with gr.Tab("Model Performance"):
 
             gr.Markdown(performance_text)
 
-            gr.Image("results/confusion_matrix.png",label="Confusion Matrix")
+            # MODEL COMPARISON
+            gr.Markdown("## 📊 Model Comparison")
+            gr.Image("results/model_comparison.png", label="Accuracy Comparison")
+            gr.Image("results/precision_comparison.png", label="Precision Comparison")
+            gr.Image("results/recall_comparison.png", label="Recall Comparison")
 
-            gr.Image("results/roc_curves.png",label="ROC Curve")
+            # CONFUSION MATRIX
+            gr.Markdown("## 🔍 Confusion Matrix")
+            gr.Image("results/confusion_matrix.png")
 
-            gr.Image("results/model_comparison.png",label="Accuracy Comparison")
+            # ROC
+            gr.Markdown("## 📈 ROC Curves")
+            gr.Image("results/roc_curves.png")
+            gr.Image("results/roc_comparison.png")
 
-            gr.Image("results/precision_comparison.png",label="Precision Comparison")
+            # DISTRIBUTION
+            gr.Markdown("## 📊 Prediction Distribution")
+            gr.Image("results/prob_distribution.png")
+            gr.Image("results/confidence_hist.png")
 
-            gr.Image("results/recall_comparison.png",label="Recall Comparison")
+            # TRAINING GRAPHS
+            gr.Markdown("## 🧠 Training Performance")
 
-            gr.Image("results/xception_accuracy.png",label="Xception Accuracy")
+            gr.Markdown("### Xception")
+            gr.Image("results/xception_accuracy.png")
+            gr.Image("results/xception_loss.png")
 
-            gr.Image("results/xception_loss.png",label="Xception Loss")
+            gr.Markdown("### InceptionResNetV2")
+            gr.Image("results/inceptionresnet_accuracy.png")
+            gr.Image("results/inceptionresnet_loss.png")
 
-            gr.Image("results/inceptionresnet_accuracy.png",label="InceptionResNetV2 Accuracy")
-
-            gr.Image("results/inceptionresnet_loss.png",label="InceptionResNetV2 Loss")
-
-            gr.Image("results/mobilenet_accuracy.png",label="MobileNetV2 Accuracy")
-
-            gr.Image("results/mobilenet_loss.png",label="MobileNetV2 Loss")
+            gr.Markdown("### MobileNetV2")
+            gr.Image("results/mobilenet_accuracy.png")
+            gr.Image("results/mobilenet_loss.png")
 
         # ======================
-        # About Tab
+        # ABOUT TAB
         # ======================
-
         with gr.Tab("About Project"):
-
             gr.Markdown(about_text)
+
+# =========================
+# RUN
+# =========================
 
 app.launch()
