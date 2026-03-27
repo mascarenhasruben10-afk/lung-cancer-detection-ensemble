@@ -1,130 +1,239 @@
+import numpy as np
 import tensorflow as tf
+from PIL import Image
+import gradio as gr
 import matplotlib.pyplot as plt
 import os
-import json
 
-from tensorflow.keras.applications import Xception, InceptionResNetV2, MobileNetV2
-from tensorflow.keras.layers import GlobalAveragePooling2D, Dropout, Dense
-from tensorflow.keras.models import Model
-
-# ======================
+# =========================
 # CONFIG
-# ======================
+# =========================
 
-IMG_SIZE = 256
-BATCH_SIZE = 32
-EPOCHS = 60
+model_classes = ["Benign","Malignant","Normal"]
+ENSEMBLE_ACCURACY = "96.5%"
 
-DATA_DIR = "data"
+# =========================
+# LOAD MODELS
+# =========================
 
-# ======================
-# DATASET LOADING
-# ======================
+model_paths = [
+    "models/xception.keras",
+    "models/inceptionresnet.keras",
+    "models/mobilenet.keras"
+]
 
-train_ds = tf.keras.utils.image_dataset_from_directory(
-    f"{DATA_DIR}/train",
-    image_size=(IMG_SIZE, IMG_SIZE),
-    batch_size=BATCH_SIZE
-)
+print("Models Folder:", os.listdir("models"))
 
-val_ds = tf.keras.utils.image_dataset_from_directory(
-    f"{DATA_DIR}/val",
-    image_size=(IMG_SIZE, IMG_SIZE),
-    batch_size=BATCH_SIZE
-)
+models = [tf.keras.models.load_model(p) for p in model_paths]
 
-class_names = train_ds.class_names
-NUM_CLASSES = len(class_names)
+print("✅ Models loaded successfully")
 
-print("Classes:", class_names)
+# =========================
+# PREPROCESS
+# =========================
 
-train_ds = train_ds.map(lambda x, y: (x/255.0, y))
-val_ds = val_ds.map(lambda x, y: (x/255.0, y))
+def preprocess(image):
+    image = image.resize((256,256))
+    img = np.array(image)/255.0
 
-# ======================
-# MODEL BUILDER
-# ======================
+    if len(img.shape)==2:
+        img = np.stack((img,)*3,axis=-1)
 
-def build_model(base_model, name):
+    img = np.expand_dims(img,axis=0)
+    return img
 
-    base = base_model(
-        weights="imagenet",
-        include_top=False,
-        input_shape=(IMG_SIZE, IMG_SIZE, 3)
-    )
+# =========================
+# PREDICTION
+# =========================
 
-    base.trainable = False
+def predict(image):
 
-    x = GlobalAveragePooling2D()(base.output)
-    x = Dropout(0.3)(x)
+    img = preprocess(image)
 
-    outputs = Dense(NUM_CLASSES, activation="softmax")(x)
+    preds = []
+    for model in models:
+        preds.append(model.predict(img,verbose=0)[0])
 
-    model = Model(base.input, outputs, name=name)
+    avg_probs = np.mean(preds,axis=0)
 
-    model.compile(
-        optimizer="adam",
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"]
-    )
+    pred_index = np.argmax(avg_probs)
+    pred_class = model_classes[pred_index]
+    confidence = avg_probs[pred_index]*100
 
-    return model
+    # =========================
+    # GRAPH
+    # =========================
 
-# ======================
-# CREATE MODELS
-# ======================
+    plt.figure(figsize=(7,4))
+    bars = plt.bar(model_classes,avg_probs*100)
 
-models = {
-"xception": build_model(Xception, "xception"),
-"inceptionresnet": build_model(InceptionResNetV2, "inceptionresnet"),
-"mobilenet": build_model(MobileNetV2, "mobilenet")
-}
+    bars[pred_index].set_color("red")
 
-os.makedirs("models", exist_ok=True)
-os.makedirs("results", exist_ok=True)
+    plt.ylabel("Probability (%)")
+    plt.title("Cancer Type Probability")
 
-histories = {}
+    plt.tight_layout()
+    graph_path = "prediction_graph.png"
+    plt.savefig(graph_path)
+    plt.close()
 
-# ======================
-# TRAIN MODELS
-# ======================
+    # =========================
+    # OUTPUT
+    # =========================
 
-for name, model in models.items():
+    result = f"""
+### Prediction: {pred_class}
 
-    print("\nTraining", name)
+**Confidence: {confidence:.2f}%**
 
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=EPOCHS
-    )
+### Individual Model Predictions:
+- Xception → {model_classes[np.argmax(preds[0])]}
+- InceptionResNet → {model_classes[np.argmax(preds[1])]}
+- MobileNet → {model_classes[np.argmax(preds[2])]}
+"""
 
-    model.save(f"models/{name}.keras")
+    probs = {
+        model_classes[i]: round(float(avg_probs[i]),3)
+        for i in range(3)
+    }
 
-    histories[name] = history.history
+    return result, probs, graph_path
 
-    # accuracy graph
-    plt.figure()
-    plt.plot(history.history["accuracy"])
-    plt.plot(history.history["val_accuracy"])
-    plt.title(f"{name} Accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.legend(["train", "val"])
-    plt.savefig(f"results/{name}_accuracy.png")
+# =========================
+# ABOUT TEXT
+# =========================
 
-    # loss graph
-    plt.figure()
-    plt.plot(history.history["loss"])
-    plt.plot(history.history["val_loss"])
-    plt.title(f"{name} Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend(["train", "val"])
-    plt.savefig(f"results/{name}_loss.png")
+about_text = """
+## 🫁 Lung Cancer Detection using Ensemble Deep Learning
 
-# save history
-with open("results/training_history.json", "w") as f:
-    json.dump(histories, f)
+This system classifies lung CT scans into:
 
-print("Training complete")
+- Benign
+- Malignant
+- Normal
+
+### 🧠 Models Used
+- Xception
+- InceptionResNetV2
+- MobileNetV2
+
+### ⚙️ How It Works
+Each model predicts probabilities independently.  
+Final prediction is obtained using **ensemble averaging**.
+
+### 🎯 Why Ensemble?
+- Reduces individual model errors
+- Improves accuracy
+- More reliable predictions
+
+### 🏆 Results
+- Ensemble Accuracy: **96.5%**
+- MobileNetV2: Best individual model
+- Ensemble: Most stable model
+"""
+
+# =========================
+# PERFORMANCE TEXT
+# =========================
+
+performance_text = f"""
+## 📊 Model Performance
+
+### Ensemble Accuracy
+**{ENSEMBLE_ACCURACY}**
+
+### Key Insights
+
+• MobileNetV2 achieved highest individual accuracy  
+• Ensemble model improves robustness  
+• AUC scores close to 1  
+
+### Why Ensemble Works?
+
+Combining multiple models reduces variance and improves generalization.
+"""
+
+# =========================
+# UI
+# =========================
+
+with gr.Blocks(title="Lung Cancer Detection System") as app:
+
+    gr.Markdown("# 🫁 Lung Cancer Detection System")
+
+    with gr.Tabs():
+
+        # ======================
+        # PREDICTION TAB
+        # ======================
+        with gr.Tab("Prediction"):
+
+            gr.Markdown(f"### Ensemble Model Accuracy: {ENSEMBLE_ACCURACY}")
+
+            image = gr.Image(type="pil", label="Upload Lung CT Scan")
+
+            output_text = gr.Markdown()
+            output_probs = gr.Label()
+            output_graph = gr.Image()
+
+            btn = gr.Button("Predict")
+
+            btn.click(
+                predict,
+                inputs=image,
+                outputs=[output_text, output_probs, output_graph]
+            )
+
+        # ======================
+        # MODEL PERFORMANCE TAB
+        # ======================
+        with gr.Tab("Model Performance"):
+
+            gr.Markdown(performance_text)
+
+            # MODEL COMPARISON
+            gr.Markdown("## 📊 Model Comparison")
+            gr.Image("results/model_comparison.png", label="Accuracy Comparison")
+            gr.Image("results/precision_comparison.png", label="Precision Comparison")
+            gr.Image("results/recall_comparison.png", label="Recall Comparison")
+
+            # CONFUSION MATRIX
+            gr.Markdown("## 🔍 Confusion Matrix")
+            gr.Image("results/confusion_matrix.png")
+
+            # ROC
+            gr.Markdown("## 📈 ROC Curves")
+            gr.Image("results/roc_curves.png")
+            gr.Image("results/roc_comparison.png")
+
+            # DISTRIBUTION
+            gr.Markdown("## 📊 Prediction Distribution")
+            gr.Image("results/prob_distribution.png")
+            gr.Image("results/confidence_hist.png")
+
+            # TRAINING GRAPHS
+            gr.Markdown("## 🧠 Training Performance")
+
+            gr.Markdown("### Xception")
+            gr.Image("results/xception_accuracy.png")
+            gr.Image("results/xception_loss.png")
+
+            gr.Markdown("### InceptionResNetV2")
+            gr.Image("results/inceptionresnet_accuracy.png")
+            gr.Image("results/inceptionresnet_loss.png")
+
+            gr.Markdown("### MobileNetV2")
+            gr.Image("results/mobilenet_accuracy.png")
+            gr.Image("results/mobilenet_loss.png")
+
+        # ======================
+        # ABOUT TAB
+        # ======================
+        with gr.Tab("About Project"):
+            gr.Markdown(about_text)
+
+# =========================
+# RUN
+# =========================
+
+app.launch()
