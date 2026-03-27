@@ -2,220 +2,188 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import os
+import seaborn as sns
 
-from sklearn.metrics import confusion_matrix
-from sklearn.metrics import ConfusionMatrixDisplay
-from sklearn.metrics import classification_report
-from sklearn.metrics import roc_curve, auc
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import precision_score
-from sklearn.metrics import recall_score
+from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
+    roc_curve,
+    auc,
+    log_loss
+)
 from sklearn.preprocessing import label_binarize
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-# ======================
+# =========================
 # CONFIG
-# ======================
+# =========================
 
 IMG_SIZE = 256
 BATCH_SIZE = 32
+TEST_DIR = "data/test"
 
-DATA_DIR = "data"
-
-MODEL_PATHS = [
-"models/xception.keras",
-"models/inceptionresnet.keras",
-"models/mobilenet.keras"
-]
-
-MODEL_NAMES = [
-"Xception",
-"InceptionResNetV2",
-"MobileNetV2"
-]
+model_classes = ["Benign","Malignant","Normal"]
 
 os.makedirs("results", exist_ok=True)
 
-# ======================
-# LOAD DATA
-# ======================
+# =========================
+# LOAD MODELS
+# =========================
 
-test_ds = tf.keras.utils.image_dataset_from_directory(
-    f"{DATA_DIR}/test",
-    image_size=(IMG_SIZE, IMG_SIZE),
+models = [
+    tf.keras.models.load_model("models/xception.keras"),
+    tf.keras.models.load_model("models/inceptionresnet.keras"),
+    tf.keras.models.load_model("models/mobilenet.keras")
+]
+
+print("✅ Models loaded")
+
+# =========================
+# LOAD DATA
+# =========================
+
+datagen = ImageDataGenerator(rescale=1./255)
+
+generator = datagen.flow_from_directory(
+    TEST_DIR,
+    target_size=(IMG_SIZE,IMG_SIZE),
     batch_size=BATCH_SIZE,
+    class_mode='categorical',
     shuffle=False
 )
 
-class_names = test_ds.class_names
+y_true = generator.classes
+y_true_cat = label_binarize(y_true, classes=[0,1,2])
 
-test_ds = test_ds.map(lambda x, y: (x/255.0, y))
+# =========================
+# PREDICTIONS
+# =========================
 
-X_test = np.concatenate([x for x,_ in test_ds], axis=0)
-y_true = np.concatenate([y for _,y in test_ds], axis=0)
-
-print("Test samples:", len(X_test))
-
-# ======================
-# LOAD MODELS
-# ======================
-
-models = []
-
-for path in MODEL_PATHS:
-
-    print("Loading", path)
-
-    model = tf.keras.models.load_model(path)
-
-    models.append(model)
-
-# ======================
-# MODEL PREDICTIONS
-# ======================
-
-probs_list = []
+preds = []
 
 for model in models:
+    preds.append(model.predict(generator, verbose=1))
 
-    probs = model.predict(X_test, verbose=0)
+avg_pred = np.mean(preds, axis=0)
+y_pred = np.argmax(avg_pred, axis=1)
 
-    probs_list.append(probs)
+# =========================
+# ENSEMBLE ACCURACY & LOSS
+# =========================
 
-# ======================
-# ENSEMBLE
-# ======================
+accuracy = np.mean(y_pred == y_true)
+loss = log_loss(y_true_cat, avg_pred)
 
-avg_probs = np.mean(probs_list, axis=0)
+print(f"\n🔥 Ensemble Accuracy: {accuracy*100:.2f}%")
+print(f"🔥 Ensemble Loss: {loss:.4f}")
 
-ensemble_pred = np.argmax(avg_probs, axis=1)
+# =========================
+# ENSEMBLE PERFORMANCE GRAPH
+# =========================
 
-# ======================
+plt.figure()
+metrics = ["Accuracy", "Loss"]
+values = [accuracy, loss]
+
+plt.bar(metrics, values)
+plt.title("Ensemble Model Performance")
+plt.ylabel("Value")
+
+plt.savefig("results/ensemble_performance.png")
+plt.close()
+
+# =========================
+# CLASSIFICATION REPORT
+# =========================
+
+print("\n📊 Classification Report:\n")
+print(classification_report(y_true, y_pred, target_names=model_classes))
+
+# =========================
 # CONFUSION MATRIX
-# ======================
+# =========================
 
-cm = confusion_matrix(y_true, ensemble_pred)
+cm = confusion_matrix(y_true, y_pred)
 
-disp = ConfusionMatrixDisplay(
-    confusion_matrix=cm,
-    display_labels=class_names
-)
-
-disp.plot(cmap=plt.cm.Blues)
+plt.figure(figsize=(6,5))
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=model_classes,
+            yticklabels=model_classes)
 
 plt.title("Confusion Matrix - Ensemble")
+plt.xlabel("Predicted")
+plt.ylabel("True")
 
 plt.savefig("results/confusion_matrix.png")
+plt.close()
 
-plt.show()
-
-# ======================
+# =========================
 # ROC CURVES
-# ======================
-
-y_bin = label_binarize(y_true, classes=range(len(class_names)))
+# =========================
 
 plt.figure()
 
-for i in range(len(class_names)):
+for i, model_pred in enumerate(preds):
+    for j in range(3):
+        fpr, tpr, _ = roc_curve(y_true_cat[:,j], model_pred[:,j])
+        plt.plot(fpr, tpr, label=f"Model {i+1} - {model_classes[j]}")
 
-    fpr, tpr, _ = roc_curve(y_bin[:,i], avg_probs[:,i])
+# Ensemble ROC
+for j in range(3):
+    fpr, tpr, _ = roc_curve(y_true_cat[:,j], avg_pred[:,j])
+    plt.plot(fpr, tpr, '--', label=f"Ensemble - {model_classes[j]}")
 
-    roc_auc = auc(fpr, tpr)
+plt.plot([0,1],[0,1],'k--')
+plt.legend()
+plt.title("ROC Comparison")
+plt.xlabel("FPR")
+plt.ylabel("TPR")
 
-    plt.plot(fpr, tpr, label=f"{class_names[i]} AUC={roc_auc:.3f}")
+plt.savefig("results/roc_comparison.png")
+plt.close()
 
-plt.plot([0,1],[0,1],"k--")
+# =========================
+# PROBABILITY DISTRIBUTION
+# =========================
 
-plt.title("ROC Curve")
+plt.figure(figsize=(10,5))
 
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
+for i in range(3):
+    plt.hist(avg_pred[:,i], bins=30, alpha=0.5, label=model_classes[i])
 
 plt.legend()
+plt.title("Probability Distribution")
+plt.xlabel("Probability")
+plt.ylabel("Frequency")
 
-plt.savefig("results/roc_curves.png")
+plt.savefig("results/prob_distribution.png")
+plt.close()
 
-plt.show()
+# =========================
+# CONFIDENCE HISTOGRAM
+# =========================
 
-# ======================
-# MODEL COMPARISON
-# ======================
-
-accuracies = []
-
-for probs in probs_list:
-
-    pred = np.argmax(probs, axis=1)
-
-    acc = accuracy_score(y_true, pred)
-
-    accuracies.append(acc)
-
-ensemble_acc = accuracy_score(y_true, ensemble_pred)
-
-labels = MODEL_NAMES + ["Ensemble"]
-
-values = accuracies + [ensemble_acc]
+confidence = np.max(avg_pred, axis=1)
 
 plt.figure()
+plt.hist(confidence, bins=30, color='green')
 
-plt.bar(labels, values)
+plt.title("Confidence Distribution")
+plt.xlabel("Confidence")
+plt.ylabel("Count")
 
-plt.title("Overall Accuracy")
+plt.savefig("results/confidence_hist.png")
+plt.close()
 
-plt.ylabel("Accuracy")
+# =========================
+# ERROR ANALYSIS
+# =========================
 
-plt.savefig("results/model_comparison.png")
+print("\n⚠️ Error Analysis:")
 
-plt.show()
+for i in range(3):
+    for j in range(3):
+        if i != j and cm[i][j] > 0:
+            print(f"{model_classes[i]} → {model_classes[j]}: {cm[i][j]} cases")
 
-# ======================
-# PRECISION / RECALL
-# ======================
-
-precisions = []
-recalls = []
-
-for probs in probs_list:
-
-    pred = np.argmax(probs, axis=1)
-
-    precisions.append(precision_score(y_true, pred, average="macro"))
-
-    recalls.append(recall_score(y_true, pred, average="macro"))
-
-precisions.append(precision_score(y_true, ensemble_pred, average="macro"))
-
-recalls.append(recall_score(y_true, ensemble_pred, average="macro"))
-
-# precision graph
-
-plt.figure()
-
-plt.bar(labels, precisions)
-
-plt.title("Overall Precision")
-
-plt.savefig("results/precision_comparison.png")
-
-plt.show()
-
-# recall graph
-
-plt.figure()
-
-plt.bar(labels, recalls)
-
-plt.title("Overall Recall")
-
-plt.savefig("results/recall_comparison.png")
-
-plt.show()
-
-# ======================
-# REPORT
-# ======================
-
-print("\nClassification Report\n")
-
-print(classification_report(y_true, ensemble_pred, target_names=class_names))
+print("\n✅ All graphs saved in 'results/' folder")
